@@ -20,9 +20,9 @@ export const defaultChain = polygonMumbai
 
 const appName = siteConfig.name
 const appDescription = siteConfig.description
-const appIcon = "https://ovc.plopmenz.com/icon.png" as const
-const appUrl = "https://ovc.plopmenz.com" as const
-const projectId = "0ec5e8af894898c29bc27a1c4dc11e78" as const // WalletConnect
+const appIcon = "https://genesis.plopmenz.com/icon.png" as const
+const appUrl = "https://genesis.plopmenz.com" as const
+const projectId = "cc8d704986e6d4aeb3c86d09a34beb11" as const // WalletConnect
 
 const config = getDefaultConfig({
   appName: appName,
