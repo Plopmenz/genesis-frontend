@@ -1,0 +1,3 @@
+[submodule "genesis-indexer"]
+	path = genesis-indexer
+	url = https://github.com/Plopmenz/genesis-indexer
