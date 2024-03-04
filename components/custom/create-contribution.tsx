@@ -1,11 +1,17 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { OpenmeshGenesisContract } from "@/genesis-indexer/contracts/OpenmeshGenesis"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
-import { BaseError, ContractFunctionRevertedError, parseUnits } from "viem"
-import { usePublicClient, useWalletClient } from "wagmi"
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  formatUnits,
+  maxUint256,
+  parseUnits,
+} from "viem"
+import { useAccount, usePublicClient, useWalletClient } from "wagmi"
 import { z } from "zod"
 
 import { Button } from "@/components/ui/button"
@@ -33,6 +39,7 @@ export function CreateContribution({
 }: {
   onContribute: (amount: bigint) => Promise<void>
 }) {
+  const account = useAccount()
   const { data: walletClient } = useWalletClient()
   const publicClient = usePublicClient()
   const { toast } = useToast()
@@ -40,9 +47,78 @@ export function CreateContribution({
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      amount: "0.5",
+      amount: "0",
     },
   })
+
+  const [contributed, setContributed] = useState<bigint | undefined>(undefined)
+  const getContributed = async () => {
+    if (!publicClient || !account.address) {
+      setContributed(undefined)
+      return
+    }
+
+    const totalContributed = await publicClient.readContract({
+      abi: OpenmeshGenesisContract.abi,
+      address: OpenmeshGenesisContract.address,
+      functionName: "contributed",
+      args: [account.address],
+    })
+    setContributed(totalContributed)
+  }
+
+  useEffect(() => {
+    getContributed().catch(console.error)
+  }, [publicClient, account.address])
+
+  const [bounds, setBounds] = useState<{ min: bigint; max: bigint }>({
+    min: BigInt(0),
+    max: maxUint256,
+  })
+  const getBounds = async () => {
+    if (!publicClient) {
+      return
+    }
+
+    const contractBounds = await publicClient.multicall({
+      contracts: [
+        {
+          abi: OpenmeshGenesisContract.abi,
+          address: OpenmeshGenesisContract.address,
+          functionName: "minWeiPerAccount",
+        },
+        {
+          abi: OpenmeshGenesisContract.abi,
+          address: OpenmeshGenesisContract.address,
+          functionName: "maxWeiPerAccount",
+        },
+      ],
+      allowFailure: false,
+    })
+    setBounds({ min: contractBounds[0], max: contractBounds[1] })
+  }
+
+  useEffect(() => {
+    getBounds().catch(console.error)
+  }, [publicClient])
+
+  const minBound = contributed
+    ? contributed < bounds.min
+      ? bounds.min - contributed
+      : BigInt(0)
+    : bounds.min
+  const maxBound = contributed
+    ? contributed < bounds.max
+      ? bounds.max - contributed
+      : BigInt(0)
+    : bounds.max
+
+  useEffect(() => {
+    form.setValue(
+      "amount",
+      formatUnits(maxBound, defaultChain.nativeCurrency.decimals)
+    )
+  }, [maxBound])
 
   const [submitting, setSubmitting] = useState<boolean>(false)
   async function onSubmit(values: z.infer<typeof formSchema>) {
@@ -57,6 +133,22 @@ export function CreateContribution({
     let amount = BigInt(0)
     try {
       amount = parseUnits(values.amount, defaultChain.nativeCurrency.decimals)
+      if (amount === BigInt(0)) {
+        toast({
+          title: "Amount is not a valid number",
+          description: "Cannot contribute 0",
+          variant: "destructive",
+        })
+        return
+      }
+      if (amount < minBound || amount > maxBound) {
+        toast({
+          title: "Amount is not a valid number",
+          description: `Amount has to be between ${formatUnits(minBound, defaultChain.nativeCurrency.decimals)} and ${formatUnits(maxBound, defaultChain.nativeCurrency.decimals)}`,
+          variant: "destructive",
+        })
+        return
+      }
     } catch (err: any) {
       toast({
         title: "Amount is not a valid number",
@@ -160,6 +252,7 @@ export function CreateContribution({
           <ToastAction
             altText="Refresh"
             onClick={() => {
+              getContributed().catch(console.error)
               onContribute(amount)
             }}
           >
@@ -174,40 +267,70 @@ export function CreateContribution({
   }
 
   return (
-    <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
-        <FormField
-          control={form.control}
-          name="amount"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Amount</FormLabel>
-              <FormControl>
-                <Input
-                  type="number"
-                  min={0.5}
-                  max={2}
-                  step={0.01}
-                  {...field}
-                  onChange={(change) => {
-                    field.onChange(change)
-                    form.trigger("amount")
-                  }}
-                />
-              </FormControl>
-              <FormDescription>
-                How much ETH you would like to contribute. (Minimum of 0.5 ETH,
-                Maximum of 2 ETH). Contributing a total of 2 ETH will grant you
-                the Openmesh Genesis Validator Pass.
-              </FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-        <Button type="submit" disabled={submitting}>
-          Contribute
-        </Button>
-      </form>
-    </Form>
+    <div className="grid grid-cols-1 gap-y-3">
+      <Form {...form}>
+        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
+          <FormField
+            control={form.control}
+            name="amount"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Amount</FormLabel>
+                <FormControl>
+                  <Input
+                    type="number"
+                    disabled={
+                      contributed !== undefined && contributed >= maxBound
+                    }
+                    min={formatUnits(
+                      minBound,
+                      defaultChain.nativeCurrency.decimals
+                    )}
+                    max={formatUnits(
+                      maxBound,
+                      defaultChain.nativeCurrency.decimals
+                    )}
+                    step={0.01}
+                    {...field}
+                    onChange={(change) => {
+                      field.onChange(change)
+                      form.trigger("amount")
+                    }}
+                  />
+                </FormControl>
+                <FormDescription>
+                  How much ETH you would like to contribute. (Minimum total of{" "}
+                  {formatUnits(
+                    bounds.min,
+                    defaultChain.nativeCurrency.decimals
+                  )}{" "}
+                  ETH, Maximum total of{" "}
+                  {formatUnits(
+                    bounds.max,
+                    defaultChain.nativeCurrency.decimals
+                  )}{" "}
+                  ETH). Contributing a total of{" "}
+                  {formatUnits(
+                    bounds.max,
+                    defaultChain.nativeCurrency.decimals
+                  )}{" "}
+                  ETH will grant you the Openmesh Genesis Validator Pass.
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <Button type="submit" disabled={submitting}>
+            Contribute
+          </Button>
+        </form>
+      </Form>
+      {contributed !== undefined && (
+        <span>
+          You have contributed:{" "}
+          {formatUnits(contributed, defaultChain.nativeCurrency.decimals)} ETH
+        </span>
+      )}
+    </div>
   )
 }
