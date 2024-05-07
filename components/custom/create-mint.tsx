@@ -2,14 +2,17 @@
 
 import { useEffect, useState } from "react"
 import { OpenmeshGenesisContract } from "@/genesis-indexer/contracts/OpenmeshGenesis"
+import { tree } from "@/merkletree"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import {
+  Address,
   BaseError,
   ContractFunctionRevertedError,
-  formatUnits,
-  maxUint256,
-  parseUnits,
+  decodeEventLog,
+  formatEther,
+  Hex,
+  parseEther,
 } from "viem"
 import { useAccount, usePublicClient, useWalletClient } from "wagmi"
 import { z } from "zod"
@@ -34,10 +37,18 @@ const formSchema = z.object({
   amount: z.string(),
 })
 
-export function CreateContribution({
-  onContribute,
+enum CanMint {
+  No,
+  Public,
+  Whitelist,
+}
+
+export function CreateMint({
+  price,
+  whitelist,
 }: {
-  onContribute: (amount: bigint) => Promise<void>
+  price?: bigint
+  whitelist?: { account: Address; mintFrom: number }
 }) {
   const account = useAccount()
   const { data: walletClient } = useWalletClient()
@@ -51,100 +62,75 @@ export function CreateContribution({
     },
   })
 
-  const [contributed, setContributed] = useState<bigint | undefined>(undefined)
-  const getContributed = async () => {
-    if (!publicClient || !account.address) {
-      setContributed(undefined)
+  const [proof, setProof] = useState<Hex[]>([])
+  useEffect(() => {
+    if (!whitelist) {
+      setProof([])
       return
     }
 
-    const totalContributed = await publicClient.readContract({
+    const newProof = tree.getProof([whitelist.account, whitelist.mintFrom])
+    setProof(newProof as Hex[])
+  }, [whitelist])
+
+  const [canMint, setCanMint] = useState<CanMint>(CanMint.No)
+  const getCanMint = async () => {
+    if (!publicClient || !account.address) {
+      setCanMint(CanMint.No)
+      return
+    }
+
+    const canPublicMint = await publicClient.readContract({
       abi: OpenmeshGenesisContract.abi,
       address: OpenmeshGenesisContract.address,
-      functionName: "contributed",
+      functionName: "canPublicMint",
       args: [account.address],
     })
-    setContributed(totalContributed)
-  }
-
-  useEffect(() => {
-    getContributed().catch(console.error)
-  }, [publicClient, account.address])
-
-  const [bounds, setBounds] = useState<{ min: bigint; max: bigint }>({
-    min: BigInt(0),
-    max: maxUint256,
-  })
-  const getBounds = async () => {
-    if (!publicClient) {
+    if (canPublicMint) {
+      // First try public, as it costs less gas
+      setCanMint(CanMint.Public)
       return
     }
 
-    const contractBounds = await publicClient.multicall({
-      contracts: [
-        {
-          abi: OpenmeshGenesisContract.abi,
-          address: OpenmeshGenesisContract.address,
-          functionName: "minWeiPerAccount",
-        },
-        {
-          abi: OpenmeshGenesisContract.abi,
-          address: OpenmeshGenesisContract.address,
-          functionName: "maxWeiPerAccount",
-        },
-      ],
-      allowFailure: false,
-    })
-    setBounds({ min: contractBounds[0], max: contractBounds[1] })
+    if (whitelist) {
+      const canWhitelistMint = await publicClient.readContract({
+        abi: OpenmeshGenesisContract.abi,
+        address: OpenmeshGenesisContract.address,
+        functionName: "canWhitelistMint",
+        args: [whitelist.account, proof, whitelist.mintFrom],
+      })
+      if (canWhitelistMint) {
+        setCanMint(CanMint.Whitelist)
+        return
+      }
+    }
   }
 
   useEffect(() => {
-    getBounds().catch(console.error)
-  }, [publicClient])
-
-  const minBound = contributed
-    ? contributed < bounds.min
-      ? bounds.min - contributed
-      : BigInt(0)
-    : bounds.min
-  const maxBound = contributed
-    ? contributed < bounds.max
-      ? bounds.max - contributed
-      : BigInt(0)
-    : bounds.max
+    getCanMint().catch(console.error)
+  }, [publicClient, account.address, proof])
 
   useEffect(() => {
-    form.setValue(
-      "amount",
-      formatUnits(maxBound, defaultChain.nativeCurrency.decimals)
-    )
-  }, [maxBound])
+    form.setValue("amount", formatEther(price ?? BigInt(0)))
+  }, [price])
 
   const [submitting, setSubmitting] = useState<boolean>(false)
   async function onSubmit(values: z.infer<typeof formSchema>) {
     if (submitting) {
       toast({
         title: "Please wait",
-        description: "The past submission is still running.",
+        description: "The past mint is still running.",
         variant: "destructive",
       })
       return
     }
     let amount = BigInt(0)
     try {
-      amount = parseUnits(values.amount, defaultChain.nativeCurrency.decimals)
-      if (amount === BigInt(0)) {
+      amount = parseEther(values.amount)
+      if (price && amount < price) {
         toast({
           title: "Amount is not a valid number",
-          description: "Cannot contribute 0",
-          variant: "destructive",
-        })
-        return
-      }
-      if (amount < minBound || amount > maxBound) {
-        toast({
-          title: "Amount is not a valid number",
-          description: `Amount has to be between ${formatUnits(minBound, defaultChain.nativeCurrency.decimals)} and ${formatUnits(maxBound, defaultChain.nativeCurrency.decimals)}`,
+          description: `Amount has to be higher than the current price ${formatEther(price)}`,
           variant: "destructive",
         })
         return
@@ -168,16 +154,28 @@ export function CreateContribution({
       if (!publicClient || !walletClient) {
         dismiss()
         toast({
-          title: "Contribution failed",
+          title: "Mint failed",
           description: `${publicClient ? "Wallet" : "Public"}Client is undefined.`,
           variant: "destructive",
         })
         return
       }
-      const transactionRequest = await publicClient
-        .prepareTransactionRequest({
+      const mintType =
+        canMint === CanMint.Whitelist && whitelist
+          ? ({
+              functionName: "whitelistMint",
+              args: [proof, whitelist.mintFrom],
+            } as const)
+          : ({
+              functionName: "publicMint",
+              args: [],
+            } as const)
+      const transactionRequest: any = await publicClient
+        .simulateContract({
           account: walletClient.account.address,
-          to: OpenmeshGenesisContract.address,
+          abi: OpenmeshGenesisContract.abi,
+          address: OpenmeshGenesisContract.address,
+          ...mintType,
           value: amount,
         })
         .catch((err) => {
@@ -197,14 +195,14 @@ export function CreateContribution({
       if (typeof transactionRequest === "string") {
         dismiss()
         toast({
-          title: "Contribution failed",
+          title: "Mint failed",
           description: transactionRequest,
           variant: "destructive",
         })
         return
       }
       const transactionHash = await walletClient
-        .sendTransaction(transactionRequest)
+        .writeContract(transactionRequest.request)
         .catch((err) => {
           console.error(err)
           return undefined
@@ -212,7 +210,7 @@ export function CreateContribution({
       if (!transactionHash) {
         dismiss()
         toast({
-          title: "Contribution failed",
+          title: "Mint failed",
           description: "Transaction rejected.",
           variant: "destructive",
         })
@@ -222,7 +220,7 @@ export function CreateContribution({
       dismiss()
       dismiss = toast({
         duration: 120_000, // 2 minutes
-        title: "Contribution transaction submitted",
+        title: "Mint transaction submitted",
         description: "Waiting until confirmed on the blockchain...",
         action: (
           <ToastAction
@@ -243,22 +241,41 @@ export function CreateContribution({
         hash: transactionHash,
       })
 
+      let mintSucceeded: boolean = false
+      receipt.logs.forEach((log) => {
+        try {
+          if (
+            log.address.toLowerCase() !==
+            OpenmeshGenesisContract.address.toLowerCase()
+          ) {
+            // Only interested in logs originating from the tasks contract
+            return
+          }
+
+          const taskCreatedEvent = decodeEventLog({
+            abi: OpenmeshGenesisContract.abi,
+            eventName: "Mint",
+            topics: log.topics,
+            data: log.data,
+          })
+          mintSucceeded = true
+        } catch {}
+      })
+      if (!mintSucceeded) {
+        dismiss()
+        toast({
+          title: "Error retrieving mint event",
+          description: "The mint possibly failed.",
+          variant: "destructive",
+        })
+        return
+      }
+
       dismiss()
       dismiss = toast({
         title: "Success!",
-        description: "The contribution has been made.",
+        description: "The mint has succeeded.",
         variant: "success",
-        action: (
-          <ToastAction
-            altText="Refresh"
-            onClick={() => {
-              getContributed().catch(console.error)
-              onContribute(amount)
-            }}
-          >
-            Refresh
-          </ToastAction>
-        ),
       }).dismiss
     }
 
@@ -279,17 +296,7 @@ export function CreateContribution({
                 <FormControl>
                   <Input
                     type="number"
-                    disabled={
-                      contributed !== undefined && contributed >= maxBound
-                    }
-                    min={formatUnits(
-                      minBound,
-                      defaultChain.nativeCurrency.decimals
-                    )}
-                    max={formatUnits(
-                      maxBound,
-                      defaultChain.nativeCurrency.decimals
-                    )}
+                    min={price ? formatEther(price) : "0"}
                     step={0.01}
                     {...field}
                     onChange={(change) => {
@@ -299,38 +306,22 @@ export function CreateContribution({
                   />
                 </FormControl>
                 <FormDescription>
-                  How much ETH you would like to contribute. (Minimum total of{" "}
-                  {formatUnits(
-                    bounds.min,
-                    defaultChain.nativeCurrency.decimals
-                  )}{" "}
-                  ETH, Maximum total of{" "}
-                  {formatUnits(
-                    bounds.max,
-                    defaultChain.nativeCurrency.decimals
-                  )}{" "}
-                  ETH). Contributing a total of{" "}
-                  {formatUnits(
-                    bounds.max,
-                    defaultChain.nativeCurrency.decimals
-                  )}{" "}
-                  ETH will grant you the Openmesh Genesis Validator Pass.
+                  As the price can change between you submitting the transaction
+                  and it being confirmed on the blockchain, you can input the
+                  maximum amount of ETH you are willing to pay for the mint. In
+                  case the supplied ETH is under the current price, the
+                  transaction will be reverted. Any surplus ETH will be returned
+                  to your address.
                 </FormDescription>
                 <FormMessage />
               </FormItem>
             )}
           />
-          <Button type="submit" disabled={submitting}>
-            Contribute
+          <Button type="submit" disabled={!canMint || submitting}>
+            Mint
           </Button>
         </form>
       </Form>
-      {contributed !== undefined && (
-        <span>
-          You have contributed:{" "}
-          {formatUnits(contributed, defaultChain.nativeCurrency.decimals)} ETH
-        </span>
-      )}
     </div>
   )
 }
