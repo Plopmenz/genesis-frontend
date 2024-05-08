@@ -6,7 +6,7 @@ import { OpenmeshGenesisContract } from "@/genesis-indexer/contracts/OpenmeshGen
 import { reviver } from "@/genesis-indexer/utils/json"
 import { rawTree } from "@/merkletree"
 import axios from "axios"
-import { Address } from "viem"
+import { Address, formatEther } from "viem"
 import { useAccount, useBlockNumber, usePublicClient } from "wagmi"
 
 import { FromBlockchainDate } from "@/lib/timeUnits"
@@ -132,8 +132,10 @@ export function Mint() {
           <div></div>
         ) : mintDate > new Date() ? (
           <span>You can mint from {mintDate.toDateString()}.</span>
+        ) : price !== undefined ? (
+          <span>Current price: {formatEther(price)} ETH</span>
         ) : (
-          <span>Current price: {price?.toString()} ETH</span>
+          <div></div>
         )}
         {/* {periods.map((period, i) => (
           <div key={i}>

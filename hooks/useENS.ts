@@ -1,10 +1,15 @@
 import { useEffect, useState } from "react"
-import { Address } from "viem"
-import { usePublicClient } from "wagmi"
+import { Address, createPublicClient, http } from "viem"
+import { mainnet } from "viem/chains"
 
 export function useENS({ address }: { address?: Address }) {
   const [ens, setENS] = useState<string | undefined>(undefined)
-  const publicClient = usePublicClient({ chainId: 1 })
+  const [publicClient, _] = useState(
+    createPublicClient({
+      chain: mainnet,
+      transport: http(),
+    })
+  )
   useEffect(() => {
     const getENS = async () => {
       if (!address || !publicClient) {

@@ -277,6 +277,7 @@ export function CreateMint({
         description: "The mint has succeeded.",
         variant: "success",
       }).dismiss
+      setCanMint(CanMint.No)
     }
 
     await submit().catch(console.error)
@@ -297,7 +298,7 @@ export function CreateMint({
                   <Input
                     type="number"
                     min={price ? formatEther(price) : "0"}
-                    step={0.01}
+                    step={formatEther(BigInt(1))}
                     {...field}
                     onChange={(change) => {
                       field.onChange(change)
@@ -317,7 +318,7 @@ export function CreateMint({
               </FormItem>
             )}
           />
-          <Button type="submit" disabled={!canMint || submitting}>
+          <Button type="submit" disabled={canMint === CanMint.No || submitting}>
             Mint
           </Button>
         </form>
