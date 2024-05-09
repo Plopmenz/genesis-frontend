@@ -31,39 +31,39 @@ export function Mint() {
   >(undefined)
   const [publicMint, setPublicMint] = useState<number | undefined>(undefined)
 
-  const getMintCount = async () => {
-    const response = await axios.get("/indexer/totalMint")
-    if (response.status !== 200) {
-      throw new Error(`Fetching mint count error: ${response.data}`)
+  const getMints = async () => {
+    if (!publicClient) {
+      setMints(undefined)
+      return
     }
-    const newMintCount = JSON.parse(
-      JSON.stringify(response.data),
-      reviver
-    ) as TotalMintsReturn
-    setMintCount(newMintCount.totalMints)
+
+    const newMints = await publicClient.readContract({
+      abi: OpenmeshGenesisContract.abi,
+      address: OpenmeshGenesisContract.address,
+      functionName: "mintCount",
+    })
+    setMints(newMints)
   }
 
   useEffect(() => {
-    getMintCount().catch(console.error)
-  }, [mints])
-
-  useEffect(() => {
-    const getMints = async () => {
-      if (!publicClient) {
-        setMints(undefined)
-        return
-      }
-
-      const newMints = await publicClient.readContract({
-        abi: OpenmeshGenesisContract.abi,
-        address: OpenmeshGenesisContract.address,
-        functionName: "mintCount",
-      })
-      setMints(newMints)
-    }
-
     getMints().catch(console.error)
   }, [publicClient, blocknumber])
+
+  useEffect(() => {
+    const getMintCount = async () => {
+      const response = await axios.get("/indexer/totalMint")
+      if (response.status !== 200) {
+        throw new Error(`Fetching mint count error: ${response.data}`)
+      }
+      const newMintCount = JSON.parse(
+        JSON.stringify(response.data),
+        reviver
+      ) as TotalMintsReturn
+      setMintCount(newMintCount.totalMints)
+    }
+
+    getMintCount().catch(console.error)
+  }, [mints])
 
   useEffect(() => {
     const getPrice = async () => {
@@ -120,10 +120,13 @@ export function Mint() {
   const mintDate = blockchainMintDate
     ? FromBlockchainDate(blockchainMintDate)
     : undefined
+  const onMint = async () => {
+    await Promise.all([getMints()])
+  }
 
   return (
     <div className="grid grid-cols-1 gap-y-3">
-      <CreateMint price={price} whitelist={whitelist} />
+      <CreateMint price={price} whitelist={whitelist} onMint={onMint} />
       <Separator />
       <div>
         {mints === BigInt(2000) ? (

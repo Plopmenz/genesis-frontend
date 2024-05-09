@@ -46,9 +46,11 @@ enum CanMint {
 export function CreateMint({
   price,
   whitelist,
+  onMint,
 }: {
   price?: bigint
   whitelist?: { account: Address; mintFrom: number }
+  onMint: () => Promise<void>
 }) {
   const account = useAccount()
   const { data: walletClient } = useWalletClient()
@@ -278,6 +280,7 @@ export function CreateMint({
         variant: "success",
       }).dismiss
       setCanMint(CanMint.No)
+      await onMint()
     }
 
     await submit().catch(console.error)
